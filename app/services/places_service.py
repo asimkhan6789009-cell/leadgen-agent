@@ -1,76 +1,60 @@
 from typing import List, Dict
-import googlemaps
+import httpx
 
-from app.config import settings
-
-
-def _client():
-    if not settings.GOOGLE_PLACES_API_KEY:
-        raise RuntimeError(
-            "GOOGLE_PLACES_API_KEY is not set. Add it to your .env file. "
-            "Get one at https://console.cloud.google.com/google/maps-apis"
-        )
-    return googlemaps.Client(key=settings.GOOGLE_PLACES_API_KEY)
+HEADERS = {"User-Agent": "leadgen-agent (contact: your-email@example.com)"}
 
 
 def find_businesses(location: str, business_type: str = "restaurant", limit: int = 60) -> List[Dict]:
-    gmaps = _client()
-    query = f"{business_type} in {location}"
+    """
+    Free business discovery using OpenStreetMap's Nominatim + Overpass APIs.
+    No API key needed. Data coverage is thinner than Google Places, especially
+    for reviews/ratings (OSM doesn't track those at all).
+    """
+    geo = httpx.get(
+        "https://nominatim.openstreetmap.org/search",
+        params={"q": location, "format": "json", "limit": 1},
+        headers=HEADERS, timeout=15,
+    ).json()
 
-    results: List[Dict] = []
-    resp = gmaps.places(query=query)
-    results.extend(resp.get("results", []))
+    if not geo:
+        return []
 
-    while resp.get("next_page_token") and len(results) < limit:
-        import time
-        time.sleep(2)
-        resp = gmaps.places(query=query, page_token=resp["next_page_token"])
-        results.extend(resp.get("results", []))
+    lat, lon = float(geo[0]["lat"]), float(geo[0]["lon"])
 
-    results = results[:limit]
+    query = f"""
+    [out:json][timeout:25];
+    node["amenity"~"{business_type}",i](around:8000,{lat},{lon});
+    out body {limit};
+    """
+    resp = httpx.post(
+        "https://overpass-api.de/api/interpreter",
+        data={"data": query}, headers=HEADERS, timeout=30,
+    )
+    resp.raise_for_status()
+    elements = resp.json().get("elements", [])
 
     businesses = []
-    for place in results:
-        place_id = place.get("place_id")
-        details = {}
-        try:
-            details_resp = gmaps.place(
-                place_id=place_id,
-                fields=[
-                    "name", "formatted_address", "formatted_phone_number",
-                    "website", "rating", "user_ratings_total", "url",
-                    "address_component", "type",
-                ],
-            )
-            details = details_resp.get("result", {})
-        except Exception:
-            pass
-
-        city, country = _extract_city_country(details.get("address_components", []))
+    for el in elements:
+        tags = el.get("tags", {})
+        name = tags.get("name")
+        if not name:
+            continue
 
         businesses.append({
-            "name": details.get("name") or place.get("name"),
+            "name": name,
             "category": business_type,
-            "address": details.get("formatted_address") or place.get("formatted_address"),
-            "city": city,
-            "country": country,
-            "phone": details.get("formatted_phone_number"),
-            "google_place_id": place_id,
-            "google_maps_url": details.get("url"),
-            "rating": details.get("rating") or place.get("rating"),
-            "review_count": details.get("user_ratings_total") or place.get("user_ratings_total"),
-            "website_url": details.get("website"),
+            "address": ", ".join(filter(None, [
+                tags.get("addr:housenumber"), tags.get("addr:street"),
+                tags.get("addr:city"),
+            ])) or None,
+            "city": tags.get("addr:city"),
+            "country": tags.get("addr:country"),
+            "phone": tags.get("phone") or tags.get("contact:phone"),
+            "google_place_id": f"osm_{el.get('id')}",
+            "google_maps_url": f"https://www.openstreetmap.org/node/{el.get('id')}",
+            "rating": None,
+            "review_count": None,
+            "website_url": tags.get("website") or tags.get("contact:website"),
         })
 
     return businesses
-
-
-def _extract_city_country(components: List[Dict]):
-    city, country = None, None
-    for comp in components:
-        types = comp.get("types", [])
-        if "locality" in types:
-            city = comp.get("long_name")
-        if "country" in types:
-            country = comp.get("long_name")
-    return city, country
