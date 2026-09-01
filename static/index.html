@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lead Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --text: #e8eaed; --muted: #8b93a3; --accent: #5b8cff;
+    --good: #3ddc84; --warn: #ffb648; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size: 18px; margin:0; font-weight:600; }
+  main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+  .panel h2 { margin-top:0; font-size:14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .row { display:flex; gap:12px; flex-wrap: wrap; align-items:end; }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .field label { font-size:12px; color: var(--muted); }
+  input, select { background:#0d0f14; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:14px; }
+  button { background: var(--accent); border:none; color:white; padding:9px 16px; border-radius:6px; font-size:14px; cursor:pointer; }
+  button.secondary { background: transparent; border:1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--bad); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  table { width:100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align:left; padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight:500; text-transform: uppercase; font-size:11px; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight:600; }
+  .badge.HIGH, .badge.GOOD { background: rgba(61,220,132,.15); color: var(--good); }
+  .badge.MEDIUM, .badge.POOR, .badge.BROKEN { background: rgba(255,182,72,.15); color: var(--warn); }
+  .badge.LOW, .badge.NO_WEBSITE { background: rgba(255,107,107,.15); color: var(--bad); }
+  .badge.SENT { background: rgba(91,140,255,.15); color: var(--accent); }
+  .stats { display:flex; gap:20px; flex-wrap: wrap; }
+  .stat { min-width:100px; }
+  .stat .n { font-size:22px; font-weight:700; }
+  .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; }
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); align-items:center; justify-content:center; z-index:10; }
+  .modal { background: var(--panel); border:1px solid var(--border); border-radius:10px; padding:24px; width:520px; max-width:90vw; max-height:85vh; overflow:auto; }
+  .modal h3 { margin-top:0; }
+  .modal textarea { width:100%; background:#0d0f14; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:10px; font-size:13px; }
+  .actions { display:flex; gap:8px; margin-top:14px; justify-content:flex-end; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .name-cell { font-weight:600; }
+  .empty { color: var(--muted); text-align:center; padding: 40px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Local Business Lead Agent</h1>
+  <span class="muted" id="campaign-label"></span>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Find Leads</h2>
+    <div class="row">
+      <div class="field"><label>Location</label><input id="f-location" placeholder="e.g. Austin, TX" /></div>
+      <div class="field"><label>Business type</label><input id="f-type" value="restaurant" /></div>
+      <div class="field"><label>Min reviews</label><input id="f-reviews" type="number" value="20" style="width:90px" /></div>
+      <div class="field"><label>Min rating</label><input id="f-rating" type="number" step="0.1" value="3.5" style="width:90px" /></div>
+      <div class="field">
+        <label>Website filter</label>
+        <select id="f-website">
+          <option value="no_website">No website only</option>
+          <option value="no_or_poor">No website or poor</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div class="field"><label>&nbsp;</label><button id="btn-search">Find Leads</button></div>
+    </div>
+  </div>
+
+  <div class="panel" id="stats-panel" style="display:none">
+    <h2>Campaign Stats</h2>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Leads</h2>
+    <div id="table-wrap"><div class="empty">Run a search to find leads.</div></div>
+  </div>
+</main>
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3 id="modal-title">Lead</h3>
+    <div id="modal-body"></div>
+    <div class="actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<script>
+const API = "";
+let currentCampaignId = null;
+
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
+
+document.getElementById('btn-search').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-search');
+  const location = document.getElementById('f-location').value.trim();
+  if (!location) { alert('Enter a location'); return; }
+
+  btn.disabled = true; btn.textContent = 'Searching...';
+  try {
+    const campaign = await fetch(`${API}/campaigns`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        location,
+        business_type: document.getElementById('f-type').value.trim() || 'restaurant',
+        min_reviews: parseInt(document.getElementById('f-reviews').value) || 0,
+        min_rating: parseFloat(document.getElementById('f-rating').value) || 0,
+        website_filter: document.getElementById('f-website').value,
+      })
+    }).then(r => r.json());
+
+    currentCampaignId = campaign.id;
+    document.getElementById('campaign-label').textContent = `${campaign.business_type} - ${campaign.location}`;
+
+    await fetch(`${API}/campaigns/${campaign.id}/search`, { method: 'POST' }).then(r => r.json());
+    await refresh();
+  } catch (e) {
+    alert('Search failed: ' + e);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Find Leads';
+  }
+});
+
+async function refresh() {
+  if (!currentCampaignId) return;
+  const [businesses, stats] = await Promise.all([
+    fetch(`${API}/campaigns/${currentCampaignId}/businesses`).then(r => r.json()),
+    fetch(`${API}/campaigns/${currentCampaignId}/stats`).then(r => r.json()),
+  ]);
+  renderStats(stats);
+  renderTable(businesses);
+}
+
+function renderStats(s) {
+  const panel = document.getElementById('stats-panel');
+  panel.style.display = 'block';
+  const wrap = document.getElementById('stats');
+  wrap.innerHTML = '';
+  const items = [
+    ['Leads found', s.leads_found], ['Qualified', s.qualified],
+    ['Drafted', s.emails_drafted], ['Approved', s.emails_approved],
+    ['Sent', s.sent], ['Bounced', s.bounced], ['Replies', s.replies],
+  ];
+  items.forEach(([l, n]) => wrap.appendChild(el(`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`)));
+}
+
+function renderTable(businesses) {
+  const wrap = document.getElementById('table-wrap');
+  if (!businesses.length) { wrap.innerHTML = '<div class="empty">No leads matched your filters yet.</div>'; return; }
+
+  const rows = businesses.map(b => `
+    <tr>
+      <td class="name-cell">${b.name}</td>
+      <td>${b.rating ?? '-'}</td>
+      <td>${b.review_count ?? '-'}</td>
+      <td><span class="badge ${b.website_status}">${b.website_status}</span></td>
+      <td>${b.lead_score != null ? `${b.lead_score} <span class="badge ${b.lead_priority}">${b.lead_priority}</span>` : '-'}</td>
+      <td><span class="badge ${b.email_status}">${b.email_status}</span></td>
+      <td><button class="secondary" onclick="openLead('${b.id}')">Review</button></td>
+    </tr>`).join('');
+
+  wrap.innerHTML = `
+    <table>
+      <thead><tr><th>Business</th><th>Rating</th><th>Reviews</th><th>Website</th><th>Lead score</th><th>Email</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function openLead(id) {
+  const b = await fetch(`${API}/businesses/${id}`).then(r => r.json());
+  const modalBg = document.getElementById('modal-bg');
+  document.getElementById('modal-title').textContent = b.name;
+
+  const points = (b.personalization_points || []).map(p => `<li>${p}</li>`).join('');
+  document.getElementById('modal-body').innerHTML = `
+    <p class="muted">${b.address || ''} ${b.rating ? `- ${b.rating} stars (${b.review_count} reviews)` : ''}</p>
+    <p class="muted">Website: <span class="badge ${b.website_status}">${b.website_status}</span></p>
+    ${b.lead_score != null ? `<p><strong>Lead score: ${b.lead_score}/100</strong> <span class="badge ${b.lead_priority}">${b.lead_priority}</span><br><span class="muted">${b.lead_reason || ''}</span></p>` : ''}
+    ${points ? `<ul>${points}</ul>` : ''}
+    ${b.email_subject ? `
+      <p class="muted">Subject</p>
+      <input id="edit-subject" value="${b.email_subject.replace(/"/g,'&quot;')}" style="width:100%; margin-bottom:8px;">
+      <p class="muted">Body</p>
+      <textarea id="edit-body" rows="10">${b.email_body || ''}</textarea>
+    ` : '<p class="muted">No email drafted yet.</p>'}
+    <p class="muted" style="margin-top:8px">Contact email on file: ${b.email || 'none - add manually before sending'}</p>
+  `;
+
+  const actions = document.getElementById('modal-actions');
+  actions.innerHTML = '';
+  actions.appendChild(el(`<button class="secondary" onclick="closeModal()">Close</button>`));
+
+  if (!b.email_subject) {
+    actions.appendChild(el(`<button onclick="generateEmail('${b.id}')">Generate Email</button>`));
+  } else {
+    if (b.email_status === 'DRAFT') {
+      actions.appendChild(el(`<button class="danger" onclick="generateEmail('${b.id}')">Regenerate</button>`));
+      actions.appendChild(el(`<button onclick="approveEmail('${b.id}')">Approve</button>`));
+    }
+    if (b.email_status === 'APPROVED') {
+      actions.appendChild(el(`<button onclick="sendEmail('${b.id}')">Send</button>`));
+    }
+    if (b.email_status === 'SENT') {
+      actions.appendChild(el(`<span class="badge SENT">Sent</span>`));
+    }
+  }
+
+  modalBg.style.display = 'flex';
+}
+
+function closeModal() { document.getElementById('modal-bg').style.display = 'none'; }
+
+async function generateEmail(id) {
+  await fetch(`${API}/businesses/${id}/generate-email`, { method: 'POST' });
+  await openLead(id);
+  await refresh();
+}
+async function approveEmail(id) {
+  await fetch(`${API}/businesses/${id}/approve-email`, { method: 'POST' });
+  await openLead(id);
+  await refresh();
+}
+async function sendEmail(id) {
+  if (!confirm('Send this email now?')) return;
+  try {
+    await fetch(`${API}/businesses/${id}/send-email`, { method: 'POST' }).then(r => {
+      if (!r.ok) return r.json().then(e => { throw new Error(e.detail); });
+    });
+    await openLead(id);
+    await refresh();
+  } catch (e) { alert('Send failed: ' + e.message); }
+}
+</script>
+</body>
+  </html>
